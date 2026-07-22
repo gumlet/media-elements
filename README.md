@@ -22,6 +22,7 @@ A collection of HTMLMediaElement compatible elements and add-ons.
 | [`<twitch-video>`](packages/twitch-video-element)                                    | A custom video element for Twitch player.                                      |
 | [`<cloudflare-video>`](packages/cloudflare-video-element)                            | A custom video element for Cloudflare Stream.                                  |
 | [`<peertube-video>`](packages/peertube-video-element)                                | A custom video element for PeerTube player.                                    |
+| [`<gumlet-video>`](packages/gumlet-video-element)                                    | A custom video element for Gumlet player.                                      |
 
 ## Browser support
 
