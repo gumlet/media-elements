@@ -20,6 +20,7 @@
     "packages/super-media-element": {},
     "packages/tiktok-video-element": {},
     "packages/peertube-video-element": {},
+    "packages/gumlet-video-element": {},
     "packages/twitch-video-element": {},
     "packages/videojs-video-element": {},
     "packages/vimeo-video-element": {},

@@ -48,6 +48,9 @@ export default function SidebarNav() {
         <Link className={`link ${pathname === '/peertube-video' ? 'active' : ''}`} href="/peertube-video">peertube-video</Link>
       </li>
       <li>
+        <Link className={`link ${pathname === '/gumlet-video' ? 'active' : ''}`} href="/gumlet-video">gumlet-video</Link>
+      </li>
+      <li>
         <Link className={`link ${pathname === '/spotify-audio' ? 'active' : ''}`} href="/spotify-audio">spotify-audio</Link>
       </li>
     </ul>
