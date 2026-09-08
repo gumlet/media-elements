@@ -98,6 +98,7 @@ test('config changes reload the iframe url', async function (t) {
 
   video.config = { start_high_res: true };
   await delay(0);
+  await video.loadComplete;
 
   const iframe = video.shadowRoot.querySelector('iframe');
   t.ok(iframe.src.includes('start_high_res=true'), 'applies config to iframe url');
@@ -112,6 +113,42 @@ test('invalid src settles loadComplete', async function (t) {
     video.loadComplete.then(() => 'settled'),
     delay(200).then(() => 'timeout'),
   ]), 'settled', 'does not hang on a non-Gumlet src');
+});
+
+test('hides Gumlet chrome without controls attribute', async function (t) {
+  const video = await createVideoElement();
+  await video.loadComplete;
+
+  const iframe = video.shadowRoot.querySelector('iframe');
+  t.ok(
+    iframe.src.includes('disable_player_controls=true'),
+    'forwards missing controls as disable_player_controls',
+  );
+
+  video.controls = true;
+  await delay(0);
+  await video.loadComplete;
+  t.ok(
+    !video.shadowRoot.querySelector('iframe').src.includes('disable_player_controls=true'),
+    'shows Gumlet chrome when controls is set',
+  );
+});
+
+test('play rejects without a player', async function (t) {
+  const video = await createVideoElement();
+  await video.loadComplete;
+
+  video.src = 'https://example.com/video';
+  await video.loadComplete;
+
+  let failed = false;
+  try {
+    await video.play();
+  } catch {
+    failed = true;
+  }
+  t.ok(failed, 'play() rejects');
+  t.ok(video.paused, 'stays paused');
 });
 
 function delay(ms) {
