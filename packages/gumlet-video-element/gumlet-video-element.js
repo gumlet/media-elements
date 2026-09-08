@@ -228,7 +228,7 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     this.#currentTime = 0;
     this.#duration = NaN;
     this.#muted = this.defaultMuted;
-    this.#paused = !this.autoplay;
+    this.#paused = true;
     this.#playbackRate = 1;
     this.#readyState = 0;
     this.#seeking = false;
@@ -291,6 +291,7 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
       this.#paused = false;
       this.#readyState = 3; // HTMLMediaElement.HAVE_FUTURE_DATA
       this.dispatchEvent(new Event('play'));
+      this.dispatchEvent(new Event('playing'));
     });
 
     on('pause', () => {
