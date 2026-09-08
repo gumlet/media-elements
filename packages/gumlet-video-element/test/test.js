@@ -103,6 +103,17 @@ test('config changes reload the iframe url', async function (t) {
   t.ok(iframe.src.includes('start_high_res=true'), 'applies config to iframe url');
 });
 
+test('toggling controls does not create a new player', async function (t) {
+  const video = await createVideoElement();
+  await video.loadComplete;
+
+  const api = video.api;
+  video.controls = true;
+  await delay(0);
+
+  t.equal(video.api, api, 'reuses player.js instance');
+});
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

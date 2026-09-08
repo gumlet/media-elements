@@ -4,6 +4,19 @@ export const MATCH_SRC = /play\.gumlet\.io\/embed\/([a-zA-Z0-9_-]+)($|\?)/;
 
 const API_URL = 'https://cdn.jsdelivr.net/npm/@gumlet/player.js@3/dist/main.global.js';
 const API_GLOBAL = 'playerjs';
+const PLAYER_EVENTS = [
+  'ready',
+  'play',
+  'pause',
+  'ended',
+  'timeupdate',
+  'progress',
+  'seeked',
+  'error',
+  'volumeChange',
+  'playbackRateChange',
+  'pipChange',
+];
 
 export function canPlay(src) {
   return MATCH_SRC.test(src);
@@ -140,29 +153,16 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
       return;
     }
 
-    this.#currentTime = 0;
-    this.#duration = NaN;
-    this.#muted = this.defaultMuted;
-    this.#paused = !this.autoplay;
-    this.#playbackRate = 1;
-    this.#readyState = 0;
-    this.#seeking = false;
-    this.#volume = 1;
-    this.#teardownApi();
-    this.dispatchEvent(new Event('emptied'));
-
     if (!this.src) {
       // Nothing to load. Leave loadComplete and #hasLoaded untouched so
       // callers awaiting the existing loadComplete aren't orphaned if a
       // later load() (e.g. triggered by a subsequent src) replaces it.
+      this.#resetPlaybackState();
+      this.#teardownApi();
+      this.dispatchEvent(new Event('emptied'));
       if (this.shadowRoot) this.shadowRoot.innerHTML = '';
       return;
     }
-
-    if (this.#hasLoaded) this.loadComplete = new PublicPromise();
-    this.#hasLoaded = true;
-
-    this.dispatchEvent(new Event('loadstart'));
 
     if (!this.shadowRoot) {
       this.attachShadow(GumletVideoElement.shadowRootOptions);
@@ -182,7 +182,26 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     }
 
     const nextSrc = serializeIframeUrl(attrs, this);
-    if (!isSsrHydration && (!iframe?.src || iframe.src !== nextSrc || this.#wasDisconnected)) {
+    const shouldRebuild =
+      !isSsrHydration && (!iframe?.src || iframe.src !== nextSrc || this.#wasDisconnected);
+
+    // Same embed URL: keep the existing Player.js instance so reloads
+    // (e.g. toggling `controls`) don't stack listeners on one iframe.
+    if (!shouldRebuild && this.#api) {
+      this.#wasDisconnected = false;
+      return;
+    }
+
+    this.#resetPlaybackState();
+    this.#teardownApi();
+    this.dispatchEvent(new Event('emptied'));
+
+    if (this.#hasLoaded) this.loadComplete = new PublicPromise();
+    this.#hasLoaded = true;
+
+    this.dispatchEvent(new Event('loadstart'));
+
+    if (shouldRebuild) {
       this.shadowRoot.innerHTML = getTemplateHTML(attrs, this);
       iframe = this.shadowRoot.querySelector('iframe');
     }
@@ -205,7 +224,27 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     this.#bindApi(api);
   }
 
+  #resetPlaybackState() {
+    this.#currentTime = 0;
+    this.#duration = NaN;
+    this.#muted = this.defaultMuted;
+    this.#paused = !this.autoplay;
+    this.#playbackRate = 1;
+    this.#readyState = 0;
+    this.#seeking = false;
+    this.#volume = 1;
+  }
+
   #teardownApi() {
+    if (this.#api) {
+      for (const event of PLAYER_EVENTS) {
+        try {
+          this.#api.off?.(event);
+        } catch {
+          // Player.js may not implement off() for every event name.
+        }
+      }
+    }
     this.#api = null;
     this.#iframe = null;
   }
@@ -329,11 +368,13 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     // This is required to come before the await for resolving loadComplete.
     switch (attrName) {
       case 'autoplay':
-      case 'controls':
       case 'src': {
         this.load();
         return;
       }
+      case 'controls':
+        // CSS-only (`:host(:not([controls]))`); do not rebuild Player.js.
+        return;
     }
 
     await this.loadComplete;
