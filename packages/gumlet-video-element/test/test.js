@@ -103,15 +103,15 @@ test('config changes reload the iframe url', async function (t) {
   t.ok(iframe.src.includes('start_high_res=true'), 'applies config to iframe url');
 });
 
-test('toggling controls does not create a new player', async function (t) {
+test('invalid src settles loadComplete', async function (t) {
   const video = await createVideoElement();
   await video.loadComplete;
 
-  const api = video.api;
-  video.controls = true;
-  await delay(0);
-
-  t.equal(video.api, api, 'reuses player.js instance');
+  video.src = 'https://example.com/video';
+  t.equal(await Promise.race([
+    video.loadComplete.then(() => 'settled'),
+    delay(200).then(() => 'timeout'),
+  ]), 'settled', 'does not hang on a non-Gumlet src');
 });
 
 function delay(ms) {

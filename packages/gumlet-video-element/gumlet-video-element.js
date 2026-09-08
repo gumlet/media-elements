@@ -164,6 +164,16 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
       return;
     }
 
+    if (!canPlay(this.src)) {
+      this.#resetPlaybackState();
+      this.#teardownApi();
+      this.dispatchEvent(new Event('emptied'));
+      if (this.#hasLoaded) this.loadComplete = new PublicPromise();
+      this.#hasLoaded = true;
+      this.#settleLoad(new Error('Invalid Gumlet src'));
+      return;
+    }
+
     if (!this.shadowRoot) {
       this.attachShadow(GumletVideoElement.shadowRootOptions);
     }
@@ -209,19 +219,32 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
 
     this.#iframe = iframe;
     if (!iframe) {
-      this.loadComplete.resolve();
+      this.#settleLoad(new Error('Failed to create iframe'));
       return;
     }
 
-    const playerjs = await loadScript(API_URL, API_GLOBAL);
-    if (!this.isConnected) {
-      this.#hasLoaded = null;
-      return;
-    }
+    try {
+      const playerjs = await loadScript(API_URL, API_GLOBAL);
+      if (!this.isConnected) {
+        this.#hasLoaded = null;
+        return;
+      }
+      if (!playerjs?.Player) {
+        throw new Error('Player.js failed to load');
+      }
 
-    const api = new playerjs.Player(iframe);
-    this.#api = api;
-    this.#bindApi(api);
+      const api = new playerjs.Player(iframe);
+      this.#api = api;
+      this.#bindApi(api);
+    } catch (error) {
+      this.#teardownApi();
+      this.#settleLoad(error);
+    }
+  }
+
+  #settleLoad(error) {
+    if (error) this.dispatchEvent(new Event('error'));
+    this.loadComplete.resolve();
   }
 
   #resetPlaybackState() {
@@ -329,6 +352,7 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
 
     on('error', () => {
       this.dispatchEvent(new Event('error'));
+      this.loadComplete.resolve();
     });
 
     on('volumeChange', async () => {
