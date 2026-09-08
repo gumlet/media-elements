@@ -54,6 +54,29 @@ test('volume', async function (t) {
   t.equal(video.volume, 0.5, 'is half volume');
 });
 
+test('reloads after disconnect and reconnect', async function (t) {
+  const video = await createVideoElement();
+  await video.loadComplete;
+
+  const firstLoad = video.loadComplete;
+  video.remove();
+
+  t.ok(firstLoad !== video.loadComplete, 'creates a new loadComplete');
+
+  let resolvedAfterDisconnect = false;
+  video.loadComplete.then(() => {
+    resolvedAfterDisconnect = true;
+  });
+  await delay(0);
+  t.ok(!resolvedAfterDisconnect, 'loadComplete is pending after disconnect');
+
+  document.body.append(video);
+  await video.loadComplete;
+
+  t.ok(video.api, 'rebinds player.js after reconnect');
+  t.ok(video.paused, 'is paused after reload');
+});
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
