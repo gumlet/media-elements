@@ -4,6 +4,19 @@ export const MATCH_SRC = /play\.gumlet\.io\/embed\/([a-zA-Z0-9_-]+)($|\?)/;
 
 const API_URL = 'https://cdn.jsdelivr.net/npm/@gumlet/player.js@3/dist/main.global.js';
 const API_GLOBAL = 'playerjs';
+const PLAYER_EVENTS = [
+  'ready',
+  'play',
+  'pause',
+  'ended',
+  'timeupdate',
+  'progress',
+  'seeked',
+  'error',
+  'volumeChange',
+  'playbackRateChange',
+  'pipChange',
+];
 
 export function canPlay(src) {
   return MATCH_SRC.test(src);
@@ -104,6 +117,7 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
   #config = null;
   #iframe = null;
   #api = null;
+  #wasDisconnected = false;
 
   constructor() {
     super();
@@ -115,7 +129,9 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
   }
 
   set config(value) {
+    if (JSON.stringify(this.#config) === JSON.stringify(value)) return;
     this.#config = value;
+    this.load();
   }
 
   get api() {
@@ -127,36 +143,47 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
 
     const isFirstLoad = !this.#hasLoaded;
 
-    if (this.#hasLoaded) this.loadComplete = new PublicPromise();
-    this.#hasLoaded = true;
-
     // Wait 1 tick to allow other attributes to be set.
     this.#loadRequested = Promise.resolve();
     await this.#loadRequested;
     this.#loadRequested = null;
 
-    this.#currentTime = 0;
-    this.#duration = NaN;
-    this.#muted = this.defaultMuted;
-    this.#paused = !this.autoplay;
-    this.#playbackRate = 1;
-    this.#readyState = 0;
-    this.#seeking = false;
-    this.#volume = 1;
-    this.#teardownApi();
-    this.dispatchEvent(new Event('emptied'));
+    if (!this.isConnected) {
+      this.#hasLoaded = null;
+      return;
+    }
 
     if (!this.src) {
+      // Nothing to load. Leave loadComplete and #hasLoaded untouched so
+      // callers awaiting the existing loadComplete aren't orphaned if a
+      // later load() (e.g. triggered by a subsequent src) replaces it.
+      this.#resetPlaybackState();
+      this.#teardownApi();
+      this.dispatchEvent(new Event('emptied'));
       if (this.shadowRoot) this.shadowRoot.innerHTML = '';
       return;
     }
 
-    this.dispatchEvent(new Event('loadstart'));
+    if (!canPlay(this.src)) {
+      this.#resetPlaybackState();
+      this.#teardownApi();
+      this.dispatchEvent(new Event('emptied'));
+      if (this.#hasLoaded) this.loadComplete = new PublicPromise();
+      this.#hasLoaded = true;
+      this.#settleLoad(new Error('Invalid Gumlet src'));
+      return;
+    }
 
-    let iframe = this.shadowRoot?.querySelector('iframe');
+    if (!this.shadowRoot) {
+      this.attachShadow(GumletVideoElement.shadowRootOptions);
+    }
+
+    let iframe = this.shadowRoot.querySelector('iframe');
     const attrs = namedNodeMapToObject(this.attributes);
+    // Keep the SSR iframe; rebuild after disconnect so Player.js doesn't miss `ready`.
+    const isSsrHydration = Boolean(iframe) && isFirstLoad && !this.#wasDisconnected;
 
-    if (isFirstLoad && iframe) {
+    if (isSsrHydration) {
       try {
         this.#config = JSON.parse(iframe.getAttribute('data-config') || '{}');
       } catch {
@@ -165,30 +192,95 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     }
 
     const nextSrc = serializeIframeUrl(attrs, this);
-    if (!iframe?.src || iframe.src !== nextSrc) {
-      if (!this.shadowRoot) {
-        this.attachShadow(GumletVideoElement.shadowRootOptions);
-      }
+    const shouldRebuild =
+      !isSsrHydration && (!iframe?.src || iframe.src !== nextSrc || this.#wasDisconnected);
+
+    // Same embed URL: keep the existing Player.js instance so reloads
+    // (e.g. toggling `controls`) don't stack listeners on one iframe.
+    if (!shouldRebuild && this.#api) {
+      this.#wasDisconnected = false;
+      return;
+    }
+
+    this.#resetPlaybackState();
+    this.#teardownApi();
+    this.dispatchEvent(new Event('emptied'));
+
+    if (this.#hasLoaded) this.loadComplete = new PublicPromise();
+    this.#hasLoaded = true;
+
+    this.dispatchEvent(new Event('loadstart'));
+
+    if (shouldRebuild) {
       this.shadowRoot.innerHTML = getTemplateHTML(attrs, this);
       iframe = this.shadowRoot.querySelector('iframe');
     }
+    this.#wasDisconnected = false;
 
     this.#iframe = iframe;
-    if (!iframe) return;
+    if (!iframe) {
+      this.#settleLoad(new Error('Failed to create iframe'));
+      return;
+    }
 
-    const playerjs = await loadScript(API_URL, API_GLOBAL);
-    const api = new playerjs.Player(iframe);
-    this.#api = api;
-    this.#bindApi(api);
+    try {
+      const playerjs = await loadScript(API_URL, API_GLOBAL);
+      if (!this.isConnected) {
+        this.#hasLoaded = null;
+        return;
+      }
+      if (!playerjs?.Player) {
+        throw new Error('Player.js failed to load');
+      }
+
+      const api = new playerjs.Player(iframe);
+      this.#api = api;
+      this.#bindApi(api);
+    } catch (error) {
+      this.#teardownApi();
+      this.#settleLoad(error);
+    }
+  }
+
+  #settleLoad(error) {
+    if (error) this.dispatchEvent(new Event('error'));
+    this.loadComplete.resolve();
+  }
+
+  #resetPlaybackState() {
+    this.#currentTime = 0;
+    this.#duration = NaN;
+    this.#muted = this.defaultMuted;
+    this.#paused = true;
+    this.#playbackRate = 1;
+    this.#readyState = 0;
+    this.#seeking = false;
+    this.#volume = 1;
   }
 
   #teardownApi() {
+    if (this.#api) {
+      for (const event of PLAYER_EVENTS) {
+        try {
+          this.#api.off?.(event);
+        } catch {
+          // Player.js may not implement off() for every event name.
+        }
+      }
+    }
     this.#api = null;
     this.#iframe = null;
   }
 
   #bindApi(api) {
-    api.on('ready', async () => {
+    const on = (event, handler) => {
+      api.on(event, (...args) => {
+        if (this.#api !== api) return;
+        return handler(...args);
+      });
+    };
+
+    on('ready', async () => {
       this.#readyState = 1; // HTMLMediaElement.HAVE_METADATA
 
       try {
@@ -208,6 +300,8 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
         // Ignore transient player.js errors while initial state syncs.
       }
 
+      if (this.#api !== api) return;
+
       this.dispatchEvent(new Event('loadedmetadata'));
       this.dispatchEvent(new Event('durationchange'));
       this.dispatchEvent(new Event('volumechange'));
@@ -215,24 +309,25 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
       this.loadComplete.resolve();
     });
 
-    api.on('play', () => {
+    on('play', () => {
       if (!this.#paused) return;
       this.#paused = false;
       this.#readyState = 3; // HTMLMediaElement.HAVE_FUTURE_DATA
       this.dispatchEvent(new Event('play'));
+      this.dispatchEvent(new Event('playing'));
     });
 
-    api.on('pause', () => {
+    on('pause', () => {
       this.#paused = true;
       this.dispatchEvent(new Event('pause'));
     });
 
-    api.on('ended', () => {
+    on('ended', () => {
       this.#paused = true;
       this.dispatchEvent(new Event('ended'));
     });
 
-    api.on('timeupdate', (data) => {
+    on('timeupdate', (data) => {
       if (data?.seconds != null) this.#currentTime = data.seconds;
       if (data?.duration != null) {
         this.#duration = data.duration;
@@ -241,11 +336,11 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
       this.dispatchEvent(new Event('timeupdate'));
     });
 
-    api.on('progress', () => {
+    on('progress', () => {
       this.dispatchEvent(new Event('progress'));
     });
 
-    api.on('seeked', (data) => {
+    on('seeked', (data) => {
       this.#seeking = false;
       if (typeof data === 'number') {
         this.#currentTime = data;
@@ -255,11 +350,12 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
       this.dispatchEvent(new Event('seeked'));
     });
 
-    api.on('error', () => {
+    on('error', () => {
       this.dispatchEvent(new Event('error'));
+      this.loadComplete.resolve();
     });
 
-    api.on('volumeChange', async () => {
+    on('volumeChange', async () => {
       try {
         const [volume, muted] = await Promise.all([
           api.getVolume?.() ?? Promise.resolve(this.#volume * 100),
@@ -270,20 +366,22 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
       } catch {
         // Ignore transient player.js errors while volume state syncs.
       }
+      if (this.#api !== api) return;
       this.dispatchEvent(new Event('volumechange'));
     });
 
-    api.on('playbackRateChange', async () => {
+    on('playbackRateChange', async () => {
       try {
         const rate = await api.getPlaybackRate?.();
         if (typeof rate === 'number') this.#playbackRate = rate;
       } catch {
         // Ignore transient player.js errors while rate state syncs.
       }
+      if (this.#api !== api) return;
       this.dispatchEvent(new Event('ratechange'));
     });
 
-    api.on('pipChange', (data) => {
+    on('pipChange', (data) => {
       const inPip = typeof data === 'boolean' ? data : Boolean(data?.isPIP ?? data?.pip);
       this.dispatchEvent(new Event(inPip ? 'enterpictureinpicture' : 'leavepictureinpicture'));
     });
@@ -295,11 +393,13 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     // This is required to come before the await for resolving loadComplete.
     switch (attrName) {
       case 'autoplay':
-      case 'controls':
       case 'src': {
         this.load();
         return;
       }
+      case 'controls':
+        // CSS-only (`:host(:not([controls]))`); do not rebuild Player.js.
+        return;
     }
 
     await this.loadComplete;
@@ -323,6 +423,10 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
   }
 
   disconnectedCallback() {
+    this.#wasDisconnected = true;
+    this.#loadRequested = null;
+    this.#hasLoaded = null;
+    this.loadComplete = new PublicPromise();
     this.#teardownApi();
   }
 

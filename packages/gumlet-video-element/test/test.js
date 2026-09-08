@@ -54,6 +54,66 @@ test('volume', async function (t) {
   t.equal(video.volume, 0.5, 'is half volume');
 });
 
+test('reloads after disconnect and reconnect', async function (t) {
+  const video = await createVideoElement();
+  await video.loadComplete;
+
+  const firstLoad = video.loadComplete;
+  video.remove();
+
+  t.ok(firstLoad !== video.loadComplete, 'creates a new loadComplete');
+
+  let resolvedAfterDisconnect = false;
+  video.loadComplete.then(() => {
+    resolvedAfterDisconnect = true;
+  });
+  await delay(0);
+  t.ok(!resolvedAfterDisconnect, 'loadComplete is pending after disconnect');
+
+  document.body.append(video);
+  await video.loadComplete;
+
+  t.ok(video.api, 'rebinds player.js after reconnect');
+  t.ok(video.paused, 'is paused after reload');
+});
+
+test('clearing src does not orphan loadComplete', async function (t) {
+  const video = await createVideoElement();
+  await video.loadComplete;
+
+  const loaded = video.loadComplete;
+  video.removeAttribute('src');
+  await delay(0);
+
+  t.equal(video.loadComplete, loaded, 'keeps the resolved loadComplete');
+  t.equal(await Promise.race([
+    video.loadComplete.then(() => 'resolved'),
+    delay(50).then(() => 'timeout'),
+  ]), 'resolved', 'callers are not left hanging');
+});
+
+test('config changes reload the iframe url', async function (t) {
+  const video = await createVideoElement();
+  await video.loadComplete;
+
+  video.config = { start_high_res: true };
+  await delay(0);
+
+  const iframe = video.shadowRoot.querySelector('iframe');
+  t.ok(iframe.src.includes('start_high_res=true'), 'applies config to iframe url');
+});
+
+test('invalid src settles loadComplete', async function (t) {
+  const video = await createVideoElement();
+  await video.loadComplete;
+
+  video.src = 'https://example.com/video';
+  t.equal(await Promise.race([
+    video.loadComplete.then(() => 'settled'),
+    delay(200).then(() => 'timeout'),
+  ]), 'settled', 'does not hang on a non-Gumlet src');
+});
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
