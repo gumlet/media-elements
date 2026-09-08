@@ -77,6 +77,21 @@ test('reloads after disconnect and reconnect', async function (t) {
   t.ok(video.paused, 'is paused after reload');
 });
 
+test('clearing src does not orphan loadComplete', async function (t) {
+  const video = await createVideoElement();
+  await video.loadComplete;
+
+  const loaded = video.loadComplete;
+  video.removeAttribute('src');
+  await delay(0);
+
+  t.equal(video.loadComplete, loaded, 'keeps the resolved loadComplete');
+  t.equal(await Promise.race([
+    video.loadComplete.then(() => 'resolved'),
+    delay(50).then(() => 'timeout'),
+  ]), 'resolved', 'callers are not left hanging');
+});
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

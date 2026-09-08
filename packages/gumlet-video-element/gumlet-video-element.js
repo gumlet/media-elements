@@ -128,9 +128,6 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
 
     const isFirstLoad = !this.#hasLoaded;
 
-    if (this.#hasLoaded) this.loadComplete = new PublicPromise();
-    this.#hasLoaded = true;
-
     // Wait 1 tick to allow other attributes to be set.
     this.#loadRequested = Promise.resolve();
     await this.#loadRequested;
@@ -153,9 +150,15 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     this.dispatchEvent(new Event('emptied'));
 
     if (!this.src) {
+      // Nothing to load. Leave loadComplete and #hasLoaded untouched so
+      // callers awaiting the existing loadComplete aren't orphaned if a
+      // later load() (e.g. triggered by a subsequent src) replaces it.
       if (this.shadowRoot) this.shadowRoot.innerHTML = '';
       return;
     }
+
+    if (this.#hasLoaded) this.loadComplete = new PublicPromise();
+    this.#hasLoaded = true;
 
     this.dispatchEvent(new Event('loadstart'));
 
@@ -184,7 +187,10 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     this.#wasDisconnected = false;
 
     this.#iframe = iframe;
-    if (!iframe) return;
+    if (!iframe) {
+      this.loadComplete.resolve();
+      return;
+    }
 
     const playerjs = await loadScript(API_URL, API_GLOBAL);
     if (!this.isConnected) {
