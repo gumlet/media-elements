@@ -78,6 +78,7 @@ function serializeIframeUrl(attrs, props = {}) {
   if ('autoplay' in attrs) params.autoplay = true;
   if ('muted' in attrs) params.muted = true;
   if ('loop' in attrs) params.loop = true;
+  if (!('controls' in attrs)) params.disable_player_controls = true;
 
   for (const [key, value] of Object.entries(params)) {
     if (value == null) continue;
@@ -211,18 +212,6 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
 
     this.dispatchEvent(new Event('loadstart'));
 
-    if (shouldRebuild) {
-      this.shadowRoot.innerHTML = getTemplateHTML(attrs, this);
-      iframe = this.shadowRoot.querySelector('iframe');
-    }
-    this.#wasDisconnected = false;
-
-    this.#iframe = iframe;
-    if (!iframe) {
-      this.#settleLoad(new Error('Failed to create iframe'));
-      return;
-    }
-
     try {
       const playerjs = await loadScript(API_URL, API_GLOBAL);
       if (!this.isConnected) {
@@ -233,9 +222,28 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
         throw new Error('Player.js failed to load');
       }
 
+      if (shouldRebuild) {
+        this.shadowRoot.innerHTML = getTemplateHTML(attrs, this);
+        iframe = this.shadowRoot.querySelector('iframe');
+      }
+      this.#wasDisconnected = false;
+
+      this.#iframe = iframe;
+      if (!iframe) {
+        this.#settleLoad(new Error('Failed to create iframe'));
+        return;
+      }
+
       const api = new playerjs.Player(iframe);
       this.#api = api;
       this.#bindApi(api);
+
+      // Player.js starts its handshake from iframe onload. SSR (and any
+      // iframe that finished loading during the CDN fetch) has already
+      // fired onload, so retrigger it now that the Player is listening.
+      if (isSsrHydration) {
+        iframe.src = `${iframe.src}`;
+      }
     } catch (error) {
       this.#teardownApi();
       this.#settleLoad(error);
@@ -310,9 +318,10 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     });
 
     on('play', () => {
-      if (!this.#paused) return;
+      const wasPaused = this.#paused;
       this.#paused = false;
       this.#readyState = 3; // HTMLMediaElement.HAVE_FUTURE_DATA
+      if (!wasPaused) return;
       this.dispatchEvent(new Event('play'));
       this.dispatchEvent(new Event('playing'));
     });
@@ -393,13 +402,11 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     // This is required to come before the await for resolving loadComplete.
     switch (attrName) {
       case 'autoplay':
+      case 'controls':
       case 'src': {
         this.load();
         return;
       }
-      case 'controls':
-        // CSS-only (`:host(:not([controls]))`); do not rebuild Player.js.
-        return;
     }
 
     await this.loadComplete;
@@ -436,8 +443,15 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
 
     await this.loadComplete;
 
+    if (!this.#api) {
+      this.#paused = true;
+      this.dispatchEvent(new Event('pause'));
+      throw new Error('The element has no supported sources.');
+    }
+
     try {
-      await this.#api?.play?.();
+      await this.#api.play();
+      this.#readyState = 3; // HTMLMediaElement.HAVE_FUTURE_DATA
       this.dispatchEvent(new Event('playing'));
     } catch (error) {
       this.#paused = true;
