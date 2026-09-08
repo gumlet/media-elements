@@ -116,7 +116,9 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
   }
 
   set config(value) {
+    if (JSON.stringify(this.#config) === JSON.stringify(value)) return;
     this.#config = value;
+    this.load();
   }
 
   get api() {

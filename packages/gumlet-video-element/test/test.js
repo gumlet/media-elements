@@ -92,6 +92,17 @@ test('clearing src does not orphan loadComplete', async function (t) {
   ]), 'resolved', 'callers are not left hanging');
 });
 
+test('config changes reload the iframe url', async function (t) {
+  const video = await createVideoElement();
+  await video.loadComplete;
+
+  video.config = { start_high_res: true };
+  await delay(0);
+
+  const iframe = video.shadowRoot.querySelector('iframe');
+  t.ok(iframe.src.includes('start_high_res=true'), 'applies config to iframe url');
+});
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
