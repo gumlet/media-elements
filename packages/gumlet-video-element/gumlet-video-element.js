@@ -104,6 +104,7 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
   #config = null;
   #iframe = null;
   #api = null;
+  #wasDisconnected = false;
 
   constructor() {
     super();
@@ -135,6 +136,11 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     await this.#loadRequested;
     this.#loadRequested = null;
 
+    if (!this.isConnected) {
+      this.#hasLoaded = null;
+      return;
+    }
+
     this.#currentTime = 0;
     this.#duration = NaN;
     this.#muted = this.defaultMuted;
@@ -153,10 +159,16 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
 
     this.dispatchEvent(new Event('loadstart'));
 
-    let iframe = this.shadowRoot?.querySelector('iframe');
-    const attrs = namedNodeMapToObject(this.attributes);
+    if (!this.shadowRoot) {
+      this.attachShadow(GumletVideoElement.shadowRootOptions);
+    }
 
-    if (isFirstLoad && iframe) {
+    let iframe = this.shadowRoot.querySelector('iframe');
+    const attrs = namedNodeMapToObject(this.attributes);
+    // Keep the SSR iframe; rebuild after disconnect so Player.js doesn't miss `ready`.
+    const isSsrHydration = Boolean(iframe) && isFirstLoad && !this.#wasDisconnected;
+
+    if (isSsrHydration) {
       try {
         this.#config = JSON.parse(iframe.getAttribute('data-config') || '{}');
       } catch {
@@ -165,18 +177,21 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
     }
 
     const nextSrc = serializeIframeUrl(attrs, this);
-    if (!iframe?.src || iframe.src !== nextSrc) {
-      if (!this.shadowRoot) {
-        this.attachShadow(GumletVideoElement.shadowRootOptions);
-      }
+    if (!isSsrHydration && (!iframe?.src || iframe.src !== nextSrc || this.#wasDisconnected)) {
       this.shadowRoot.innerHTML = getTemplateHTML(attrs, this);
       iframe = this.shadowRoot.querySelector('iframe');
     }
+    this.#wasDisconnected = false;
 
     this.#iframe = iframe;
     if (!iframe) return;
 
     const playerjs = await loadScript(API_URL, API_GLOBAL);
+    if (!this.isConnected) {
+      this.#hasLoaded = null;
+      return;
+    }
+
     const api = new playerjs.Player(iframe);
     this.#api = api;
     this.#bindApi(api);
@@ -334,8 +349,7 @@ class GumletVideoElement extends (globalThis.HTMLElement ?? class {}) {
   }
 
   disconnectedCallback() {
-    // Instance state survives remove/re-attach; reset load so reconnect
-    // rebinds Player.js instead of using a resolved loadComplete with #api null.
+    this.#wasDisconnected = true;
     this.#loadRequested = null;
     this.#hasLoaded = null;
     this.loadComplete = new PublicPromise();
